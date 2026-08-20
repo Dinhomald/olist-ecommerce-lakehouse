@@ -1,0 +1,189 @@
+-- Databricks notebook source
+-- MAGIC %python
+-- MAGIC from pyspark.sql.functions import col, lit, to_date
+-- MAGIC
+-- MAGIC df_produtos_silver = spark.table("olist_lakehouse.silver.products")
+-- MAGIC
+-- MAGIC df_dim_produto_inicial = (
+-- MAGIC     df_produtos_silver
+-- MAGIC     .select(
+-- MAGIC         col("product_id"),
+-- MAGIC         col("product_category_name"),
+-- MAGIC         col("product_weight_g"),
+-- MAGIC         col("product_length_cm"),
+-- MAGIC         col("product_height_cm"),
+-- MAGIC         col("product_width_cm"),
+-- MAGIC     )
+-- MAGIC     .withColumn("data_inicio_vigencia", to_date(lit("2016-01-01")))
+-- MAGIC     .withColumn("data_fim_vigencia", to_date(lit(None)))
+-- MAGIC     .withColumn("flag_vigente", lit(True))
+-- MAGIC )
+-- MAGIC
+-- MAGIC print(f"Total de produtos (carga inicial): {df_dim_produto_inicial.count()}")
+-- MAGIC df_dim_produto_inicial.printSchema()
+
+-- COMMAND ----------
+
+-- MAGIC %python
+-- MAGIC from pyspark.sql.functions import monotonically_increasing_id
+-- MAGIC
+-- MAGIC df_dim_produto_inicial = df_dim_produto_inicial.withColumn(
+-- MAGIC     "sk_produto", monotonically_increasing_id()
+-- MAGIC ).select(
+-- MAGIC     "sk_produto", "product_id", "product_category_name",
+-- MAGIC     "product_weight_g", "product_length_cm", "product_height_cm", "product_width_cm",
+-- MAGIC     "data_inicio_vigencia", "data_fim_vigencia", "flag_vigente"
+-- MAGIC )
+-- MAGIC
+-- MAGIC display(df_dim_produto_inicial.limit(5))
+
+-- COMMAND ----------
+
+-- MAGIC %python
+-- MAGIC total = df_dim_produto_inicial.count()
+-- MAGIC sk_distintas = df_dim_produto_inicial.select("sk_produto").distinct().count()
+-- MAGIC product_id_distintos = df_dim_produto_inicial.select("product_id").distinct().count()
+-- MAGIC
+-- MAGIC print(f"Total: {total}")
+-- MAGIC print(f"sk_produto distintas: {sk_distintas}")
+-- MAGIC print(f"product_id distintos: {product_id_distintos}")
+-- MAGIC
+-- MAGIC assert total == sk_distintas == product_id_distintos, "Inconsistência na carga inicial"
+-- MAGIC
+-- MAGIC (
+-- MAGIC     df_dim_produto_inicial.write
+-- MAGIC     .format("delta")
+-- MAGIC     .mode("overwrite")
+-- MAGIC     .option("overwriteSchema", "true")
+-- MAGIC     .saveAsTable("olist_lakehouse.gold.dim_produto")
+-- MAGIC )
+-- MAGIC
+-- MAGIC print("Carga inicial de olist_lakehouse.gold.dim_produto escrita com sucesso.")
+
+-- COMMAND ----------
+
+-- MAGIC %python
+-- MAGIC from pyspark.sql.functions import when, col
+-- MAGIC
+-- MAGIC produtos_para_mudar = [
+-- MAGIC     row["product_id"]
+-- MAGIC     for row in spark.table("olist_lakehouse.gold.dim_produto")
+-- MAGIC         .select("product_id")
+-- MAGIC         .limit(5)
+-- MAGIC         .collect()
+-- MAGIC ]
+-- MAGIC
+-- MAGIC print("Produtos escolhidos para simular mudança de categoria:")
+-- MAGIC print(produtos_para_mudar)
+-- MAGIC
+-- MAGIC nova_categoria = "eletronicos"
+-- MAGIC
+-- MAGIC df_novo_snapshot = (
+-- MAGIC     spark.table("olist_lakehouse.silver.products")
+-- MAGIC     .select(
+-- MAGIC         col("product_id"),
+-- MAGIC         when(col("product_id").isin(produtos_para_mudar), nova_categoria)
+-- MAGIC         .otherwise(col("product_category_name"))
+-- MAGIC         .alias("product_category_name"),
+-- MAGIC         col("product_weight_g"),
+-- MAGIC         col("product_length_cm"),
+-- MAGIC         col("product_height_cm"),
+-- MAGIC         col("product_width_cm"),
+-- MAGIC     )
+-- MAGIC )
+
+-- COMMAND ----------
+
+-- MAGIC %python
+-- MAGIC df_vigente_atual = spark.table("olist_lakehouse.gold.dim_produto").filter(col("flag_vigente") == True)
+-- MAGIC
+-- MAGIC df_mudancas = (
+-- MAGIC     df_novo_snapshot.alias("novo")
+-- MAGIC     .join(
+-- MAGIC         df_vigente_atual.alias("atual"),
+-- MAGIC         on="product_id",
+-- MAGIC         how="inner"
+-- MAGIC     )
+-- MAGIC     .filter(col("novo.product_category_name") != col("atual.product_category_name"))
+-- MAGIC     .select("product_id")
+-- MAGIC )
+-- MAGIC
+-- MAGIC print(f"Produtos com mudança de categoria detectada: {df_mudancas.count()}")
+-- MAGIC df_mudancas.show()
+
+-- COMMAND ----------
+
+-- MAGIC %python
+-- MAGIC from delta.tables import DeltaTable
+-- MAGIC
+-- MAGIC dim_produto_delta = DeltaTable.forName(spark, "olist_lakehouse.gold.dim_produto")
+-- MAGIC
+-- MAGIC (
+-- MAGIC     dim_produto_delta.alias("atual")
+-- MAGIC     .merge(
+-- MAGIC         df_mudancas.alias("mudancas"),
+-- MAGIC         "atual.product_id = mudancas.product_id AND atual.flag_vigente = true"
+-- MAGIC     )
+-- MAGIC     .whenMatchedUpdate(set={
+-- MAGIC         "flag_vigente": "false",
+-- MAGIC         "data_fim_vigencia": "current_date()"
+-- MAGIC     })
+-- MAGIC     .execute()
+-- MAGIC )
+-- MAGIC
+-- MAGIC print("Versões antigas fechadas.")
+
+-- COMMAND ----------
+
+-- MAGIC %python
+-- MAGIC from pyspark.sql.functions import lit, to_date, current_date, monotonically_increasing_id, max as spark_max
+-- MAGIC
+-- MAGIC max_sk = spark.table("olist_lakehouse.gold.dim_produto").agg(spark_max("sk_produto")).collect()[0][0]
+-- MAGIC print(f"Maior sk_produto atual: {max_sk}")
+-- MAGIC
+-- MAGIC df_novas_versoes = (
+-- MAGIC     df_novo_snapshot
+-- MAGIC     .filter(col("product_id").isin(produtos_para_mudar))
+-- MAGIC     .withColumn("data_inicio_vigencia", current_date())
+-- MAGIC     .withColumn("data_fim_vigencia", to_date(lit(None)))
+-- MAGIC     .withColumn("flag_vigente", lit(True))
+-- MAGIC     .withColumn("sk_produto", monotonically_increasing_id() + lit(max_sk) + 1)
+-- MAGIC     .select(
+-- MAGIC         "sk_produto", "product_id", "product_category_name",
+-- MAGIC         "product_weight_g", "product_length_cm", "product_height_cm", "product_width_cm",
+-- MAGIC         "data_inicio_vigencia", "data_fim_vigencia", "flag_vigente"
+-- MAGIC     )
+-- MAGIC )
+-- MAGIC
+-- MAGIC display(df_novas_versoes)
+
+-- COMMAND ----------
+
+-- MAGIC %python
+-- MAGIC (
+-- MAGIC     df_novas_versoes.write
+-- MAGIC     .format("delta")
+-- MAGIC     .mode("append")
+-- MAGIC     .saveAsTable("olist_lakehouse.gold.dim_produto")
+-- MAGIC )
+-- MAGIC
+-- MAGIC print("Novas versões vigentes inseridas com sucesso.")
+
+-- COMMAND ----------
+
+-- MAGIC %python
+-- MAGIC df_dim_produto_final = spark.table("olist_lakehouse.gold.dim_produto")
+-- MAGIC
+-- MAGIC total_linhas = df_dim_produto_final.count()
+-- MAGIC total_product_id_distintos = df_dim_produto_final.select("product_id").distinct().count()
+-- MAGIC total_vigentes = df_dim_produto_final.filter(col("flag_vigente") == True).count()
+-- MAGIC
+-- MAGIC print(f"Total de linhas (versões): {total_linhas}")
+-- MAGIC print(f"product_id distintos: {total_product_id_distintos}")
+-- MAGIC print(f"Versões vigentes (flag_vigente=true): {total_vigentes}")
+-- MAGIC
+-- MAGIC assert total_linhas == 32951 + 5, "Total de versões não bate com o esperado (32951 originais + 5 novas)"
+-- MAGIC assert total_product_id_distintos == 32951, "Número de produtos únicos mudou — não deveria, SCD2 não cria produto novo"
+-- MAGIC assert total_vigentes == 32951, "Deveria haver exatamente 1 versão vigente por produto, sem duplicidade de vigência"
+-- MAGIC
+-- MAGIC print("SCD2 validado: histórico preservado, vigência única por produto.")
