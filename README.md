@@ -2,7 +2,8 @@
 
 Pipeline de dados end-to-end sobre o dataset Olist Brazilian E-commerce, construído
 como projeto de portfólio técnico em Azure Data Factory, ADLS Gen2 e Databricks
-(Unity Catalog), seguindo a arquitetura medalhão (Bronze → Silver → Gold).
+(Unity Catalog), seguindo a arquitetura medalhão (Bronze → Silver → Gold →
+Publish).
 
 ![Arquitetura do pipeline](docs/arquitetura/screenshots/diagrama-arquitetura.jpg)
 
