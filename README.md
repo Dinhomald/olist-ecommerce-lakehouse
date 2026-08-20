@@ -1,10 +1,10 @@
-![Arquitetura do pipeline](docs/arquitetura/screenshots/diagrama-arquitetura.jpg)
-
 # olist-ecommerce-lakehouse
 
 Pipeline de dados end-to-end sobre o dataset Olist Brazilian E-commerce, construído
 como projeto de portfólio técnico em Azure Data Factory, ADLS Gen2 e Databricks
 (Unity Catalog), seguindo a arquitetura medalhão (Bronze → Silver → Gold).
+
+![Arquitetura do pipeline](docs/arquitetura/screenshots/diagrama-arquitetura.jpg)
 
 ```
 Dataset Olist → API própria (FastAPI) → Azure Data Factory → ADLS Gen2 (Bronze)
