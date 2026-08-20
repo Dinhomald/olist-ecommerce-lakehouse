@@ -1,3 +1,5 @@
+![Arquitetura do pipeline](docs/arquitetura/screenshots/diagrama-arquitetura.jpg)
+
 # olist-ecommerce-lakehouse
 
 Pipeline de dados end-to-end sobre o dataset Olist Brazilian E-commerce, construído
